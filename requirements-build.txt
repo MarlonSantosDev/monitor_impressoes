@@ -1,0 +1,4 @@
+# Dependências para gerar o .exe (usado pelo build.ps1 / build.bat)
+# Inclui as do app (-r requirements.txt) mais PyInstaller
+-r requirements.txt
+pyinstaller>=6.0

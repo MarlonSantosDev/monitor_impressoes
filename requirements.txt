@@ -1,0 +1,8 @@
+# Monitor de impressões Windows
+# Dependências externas (usadas pelo app.py). Restante é stdlib: os, re, socket, sys, time, datetime.
+#
+# Para rodar o app: pip install -r requirements.txt
+# Para gerar o .exe: use build.bat (instala também PyInstaller via requirements-build.txt)
+
+pywin32>=306
+openpyxl>=3.1

@@ -1,0 +1,13 @@
+# Ambiente virtual
+venv/
+.venv/
+
+# Build PyInstaller
+dist/
+build/
+*.spec
+
+# Logs gerados pelo .exe (opcional: descomente para não versionar)
+# log_impressoes_*.xlsx
+# arquivos/
+/arquivos/
