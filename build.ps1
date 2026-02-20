@@ -18,19 +18,18 @@ if (-not (Test-Path (Join-Path $venvPath "Scripts\python.exe"))) {
     Write-Host "[1/4] Criando ambiente virtual..." -ForegroundColor Yellow
     python -m venv venv
 } else {
+$pip = Join-Path $venvPath "Scripts\pip.exe"
     Write-Host "[1/4] Usando ambiente virtual existente." -ForegroundColor Gray
 }
 
-$pip = Join-Path $venvPath "Scripts\pip.exe"
 $py = Join-Path $venvPath "Scripts\python.exe"
 
 Write-Host "[2/4] Instalando dependencias de build (PyInstaller)..." -ForegroundColor Yellow
-& $pip install -r requirements-build.txt -q
+& $py -m pip install -r requirements-build.txt -q
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 Write-Host "[3/4] Gerando executavel com PyInstaller..." -ForegroundColor Yellow
-$pyinstaller = Join-Path $venvPath "Scripts\pyinstaller.exe"
-& $pyinstaller @(
+& $py -m PyInstaller @(
     "--onefile",           # um unico .exe
     "--console",           # janela de console (para ver mensagens)
     "--name", "MonitorImpressoes",
@@ -41,6 +40,7 @@ $pyinstaller = Join-Path $venvPath "Scripts\pyinstaller.exe"
     "--noconfirm",
     "--hidden-import", "win32print",
     "--hidden-import", "win32api",
+    "--hidden-import", "win32timezone",
     "app.py"
 )
 if ($LASTEXITCODE -ne 0) {

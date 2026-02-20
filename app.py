@@ -14,6 +14,7 @@ import time
 from datetime import datetime, timedelta
 
 import win32print
+import win32timezone  # Usado por pywin32 ao acessar job['Submitted']; necessário no .exe
 from openpyxl import Workbook, load_workbook
 
 # --- CONFIGURAÇÃO ---
