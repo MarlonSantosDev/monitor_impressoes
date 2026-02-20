@@ -3,7 +3,6 @@ venv/
 .venv/
 
 # Build PyInstaller
-dist/
 build/
 *.spec
 
@@ -11,3 +10,4 @@ build/
 # log_impressoes_*.xlsx
 # arquivos/
 /arquivos/
+__pycache__
