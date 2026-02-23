@@ -340,7 +340,17 @@ def monitorar_impressoes():
 
                         # --- EXTRAÇÃO DE DADOS ---
                         usuario = job.get('pUserName', 'Sistema/Desconhecido')
-                        documento = job.get('pDocument', 'Sem Nome')
+                        # Nome do arquivo impresso: pywin32 pode usar 'pDocument' ou 'Document'
+                        documento = (
+                            job.get('pDocument') or job.get('Document') or job.get('pDocName')
+                            or ''
+                        )
+                        if isinstance(documento, str):
+                            documento = documento.strip()
+                        if not documento:
+                            documento = f"Sem Nome (job {job_id})"
+                        else:
+                            documento = str(documento)
                         paginas = job.get('TotalPages', 0)
                         tamanho = job.get('Size', 0)  # Tamanho em bytes
                         
