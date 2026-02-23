@@ -74,6 +74,7 @@ O Excel do dia fica **na raiz** (mesma pasta do .exe). A pasta **arquivos/** é 
 
 - **Um arquivo por dia** na raiz: `log_impressoes_DDMMYYYY.xlsx`; retenção de **2 dias** (arquivos mais antigos são removidos automaticamente).
 - Aba: **Impressões**.
+- **Pasta `arquivos/`**: se a opção de cópia do spool estiver ativa, aqui ficam cópias dos arquivos de spool (`.spl`) de cada job; a coluna **Local_Arquivo** do Excel contém o caminho completo desses arquivos.
 
 Enquanto o monitor estiver rodando, evite deixar o arquivo do dia aberto no Excel para não dar erro de permissão.
 
@@ -92,8 +93,7 @@ Cada linha registra um job de impressão com as colunas abaixo (ordem fixa):
 | Paginas | Total de páginas (TotalPages) |
 | Impressora | Nome da impressora |
 | Tamanho_Bytes | Tamanho do job em bytes (Size) |
-| IP | IP da máquina onde o monitor está rodando |
-| Local_Arquivo | Caminho completo do arquivo .xlsx (para referência) |
+| Local_Arquivo | Caminho completo do arquivo de cópia do spool em `arquivos/` (ex.: `...\arquivos\42_Impressora_Doc.spl`) |
 
 Fonte dos dados: API Windows de impressão (`win32print`: EnumPrinters, EnumJobs nível 2).
 
@@ -103,13 +103,14 @@ Fonte dos dados: API Windows de impressão (`win32print`: EnumPrinters, EnumJobs
 
 | Regra | Valor / Comportamento |
 |-------|------------------------|
-| Intervalo de verificação | 2 segundos entre cada varredura das filas |
+| Intervalo de verificação | 0,5 segundo entre cada varredura das filas |
 | Retenção de logs | 2 dias; arquivos `log_impressoes_*.xlsx` mais antigos são removidos automaticamente |
 | Cache de jobs processados | Jobs são guardados em memória para não duplicar; entradas com mais de 24 h são removidas |
 | Limpeza de logs antigos | Na inicialização e depois uma vez a cada 24 h |
 | Duplicação | Evitada por chave única: `Nome da impressora` + `JobId` |
-| Jobs em spooling | Se páginas = 0 e status = spooling, o job é ignorado nesse ciclo (tentado no próximo) |
+| Jobs com 0 páginas | Registrados assim mesmo (evita perder jobs que saem da fila antes de preencher TotalPages) |
 | Impressoras inacessíveis | Geram apenas aviso no console; o monitor continua com as demais |
+| Cópia do spool | Se ativada (`SALVAR_COPIA_SPL = True` em `app.py`), grava em `arquivos/` uma cópia do arquivo de spool (`.spl`) de cada job; pode exigir execução como Administrador |
 
 ---
 
