@@ -7,14 +7,17 @@ Cria a pasta arquivos/ e, se SALVAR_COPIA_SPL = True, grava lá uma cópia do
 arquivo de spool (.SPL) do job — não é o documento original (PDF/DOC), e sim
 o formato que o Windows envia para a impressora. Pode exigir permissões de admin.
 Requer Windows (pywin32) e openpyxl.
+Erros e falhas de execução são registrados em erro.log na mesma pasta do .exe.
 Se não coletar dados nos testes, defina DEBUG = True para ver impressoras e jobs na fila.
 """
+import logging
 import os
 import re
 import shutil
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timedelta
 
 import win32con
@@ -31,16 +34,68 @@ else:
     PASTA_SCRIPT = os.path.dirname(os.path.abspath(__file__))
 # Saída: Excel do dia na raiz (log_impressoes_DDMMYYYY.xlsx) + pasta arquivos/
 PASTA_ARQUIVOS = os.path.join(PASTA_SCRIPT, "arquivos")
+ARQUIVO_LOG_ERRO = os.path.join(PASTA_SCRIPT, "erro.log")
 NOME_ABA = "Impressões"
 CABECALHO = [
-    "ID_Job", "Usuario", "Data_Hora", "Arquivo", "Paginas", "Impressora", "Tamanho_Bytes",
-    "Local_Arquivo"
+    "Usuario", "Data_Hora", "Arquivo", "Paginas", "Impressora", "Tamanho", "Local_Arquivo"
 ]
 DIAS_RETENCAO = 2       # Remover log_impressoes_*.xlsx com mais de 2 dias
 INTERVALO_SEGUNDOS = 0.5  # Varredura das filas (menor = mais chance de pegar jobs rápidos)
 CACHE_JOB_HORAS = 24    # Limpar do cache jobs processados há mais de 24 h
 DEBUG = False           # True: mostra quantas impressoras/jobs por ciclo
 SALVAR_COPIA_SPL = True  # Copiar arquivo de spool do job para pasta arquivos/ (pode exigir admin)
+
+
+def configurar_log_erro():
+    """Configura o módulo logging para gravar em erro.log (append) com data/hora e ponto do código."""
+    log = logging.getLogger("monitor_impressoes")
+    log.setLevel(logging.DEBUG)
+    if log.handlers:
+        return log
+    try:
+        fh = logging.FileHandler(ARQUIVO_LOG_ERRO, mode="a", encoding="utf-8")
+    except OSError:
+        return log
+    fh.setLevel(logging.DEBUG)
+    fmt = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    fh.setFormatter(fmt)
+    log.addHandler(fh)
+    return log
+
+
+def log_erro(ponto: str, mensagem: str, exc: BaseException | None = None):
+    """Registra em erro.log: ponto do código, mensagem e, se houver, exceção com traceback."""
+    log = configurar_log_erro()
+    texto = f"[{ponto}] {mensagem}"
+    if exc is not None:
+        log.error("%s | %s: %s\n%s", texto, type(exc).__name__, exc, traceback.format_exc())
+    else:
+        log.error(texto)
+
+
+def log_aviso(ponto: str, mensagem: str):
+    """Registra aviso em erro.log (falha de execução sem exceção)."""
+    configurar_log_erro().warning("[%s] %s", ponto, mensagem)
+
+
+def _bytes_para_kb_mb_gb(size_bytes: int) -> str:
+    """Converte tamanho em bytes para string legível em KB, MB ou GB."""
+    try:
+        n = int(size_bytes)
+    except (TypeError, ValueError):
+        return "0 KB"
+    if n < 0:
+        return "0 KB"
+    if n < 1024:
+        return f"{n / 1024:.2f} KB"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.2f} KB"
+    if n < 1024**3:
+        return f"{n / (1024**2):.2f} MB"
+    return f"{n / (1024**3):.2f} GB"
 
 
 def _sanitizar_nome_arquivo(nome: str, max_len: int = 80) -> str:
@@ -63,22 +118,29 @@ def caminho_arquivo_copia(job_id: int, nome_documento: str, impressora: str) -> 
     return os.path.join(PASTA_ARQUIVOS, dest_nome)
 
 
-def copiar_spool_para_arquivos(job_id: int, dest_path: str) -> bool:
+def copiar_spool_para_arquivos(job_id: int, dest_path: str, max_tentativas: int = 5) -> bool:
     """
     Tenta copiar o arquivo de spool do job (System32\\spool\\PRINTERS) para dest_path.
-    Retorna True se copiou, False se falhou (ex.: sem permissão, pooling ativo).
+    Faz até max_tentativas com pequenas pausas (o .SPL pode aparecer um pouco depois do job).
+    Retorna True se copiou, False se falhou (ex.: sem permissão, arquivo já removido).
     O arquivo é .SPL (formato spool Windows), não o documento original.
     """
     spool_dir = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "spool", "PRINTERS")
     nome_spl = f"{job_id:05d}.SPL"
     src = os.path.join(spool_dir, nome_spl)
-    if not os.path.isfile(src):
-        return False
-    try:
-        shutil.copy2(src, dest_path)
-        return True
-    except (OSError, PermissionError):
-        return False
+    for _ in range(max_tentativas):
+        if os.path.isfile(src):
+            try:
+                shutil.copy2(src, dest_path)
+                return True
+            except (OSError, PermissionError):
+                pass
+        time.sleep(0.25)
+    log_aviso(
+        "copiar_spool_para_arquivos",
+        f"Falha após {max_tentativas} tentativas: job_id={job_id} src={src} dest={dest_path}",
+    )
+    return False
 
 
 def caminho_log_do_dia(data=None):
@@ -95,9 +157,12 @@ def caminho_log_do_dia(data=None):
 
 def iniciar_log():
     """Cria a pasta arquivos/ na raiz e executa limpeza de logs antigos."""
+    configurar_log_erro()
+    logging.getLogger("monitor_impressoes").info("Início do monitor de impressões")
     os.makedirs(PASTA_ARQUIVOS, exist_ok=True)
     print(f"Log do dia na raiz: log_impressoes_DDMMYYYY.xlsx")
     print(f"Pasta criada: arquivos/")
+    print(f"Erros e avisos: {ARQUIVO_LOG_ERRO}")
     limpar_logs_antigos()
 
 
@@ -144,6 +209,7 @@ def watch_spool_directory(spool_copies: dict):
             None,
         )
     except OSError as e:
+        log_erro("watch_spool_directory.inicio", f"Não foi possível abrir pasta do spool: {spool_dir}", e)
         print(f"[Aviso] Watcher de spool não iniciado: {e}")
         return
 
@@ -170,14 +236,23 @@ def watch_spool_directory(spool_copies: dict):
                     continue
                 os.makedirs(PASTA_ARQUIVOS, exist_ok=True)
                 dest = os.path.join(PASTA_ARQUIVOS, f"_temp_{job_id}.spl")
-                try:
-                    shutil.copy2(src, dest)
-                    spool_copies[job_id] = dest
-                    if DEBUG:
-                        print(f"[Spool] Capturado: {filename} → {dest}")
-                except (OSError, PermissionError):
-                    pass  # Arquivo ainda bloqueado ou já deletado; fallback no loop principal
+                # Retenta a cópia: o .SPL pode estar sendo escrito e bloqueado no primeiro instante
+                copiou = False
+                for _ in range(5):
+                    try:
+                        time.sleep(0.15)
+                        shutil.copy2(src, dest)
+                        spool_copies[job_id] = dest
+                        copiou = True
+                        if DEBUG:
+                            print(f"[Spool] Capturado: {filename} → {dest}")
+                        break
+                    except (OSError, PermissionError):
+                        pass
+                if not copiou:
+                    log_aviso("watch_spool_directory.copia", f"Cópia do spool falhou após 5 tentativas: job_id={job_id} arquivo={filename}")
         except Exception as e:
+            log_erro("watch_spool_directory.loop", "Erro ao processar alterações do spool", e)
             if DEBUG:
                 print(f"[Spool] Erro no watcher: {e}")
             time.sleep(1)
@@ -264,9 +339,15 @@ def monitorar_impressoes():
                                 except OSError:
                                     if os.path.isfile(temp):
                                         local_arquivo = temp  # fallback: registra o _temp_*.spl no Excel
-                            if not local_arquivo:  # fallback: tenta cópia direta
+                            if not local_arquivo:  # fallback: tenta cópia direta com retries
                                 if copiar_spool_para_arquivos(job_id, dest_path):
                                     local_arquivo = dest_path
+                            if not local_arquivo:
+                                log_aviso(
+                                    "monitorar_impressoes.copia_spool",
+                                    f"Cópia do spool não salva: job_id={job_id} documento={documento!r} impressora={printer_name!r}",
+                                )
+                                print(f"      [Aviso] Cópia do spool não salva (arquivo não encontrado ou sem permissão em System32\\spool\\PRINTERS)")
 
                         # --- SALVAR NO EXCEL (raiz: log_impressoes_DDMMYYYY.xlsx) ---
                         arquivo_hoje = caminho_log_do_dia()
@@ -284,7 +365,8 @@ def monitorar_impressoes():
                                     ws = wb.create_sheet(NOME_ABA)
                                     ws.append(CABECALHO)
                             ws.append([
-                                job_id, usuario, data_hora, documento, paginas, printer_name, tamanho,
+                                usuario, data_hora, documento, paginas, printer_name,
+                                _bytes_para_kb_mb_gb(tamanho),
                                 local_arquivo
                             ])
                             wb.save(arquivo_hoje)
@@ -295,12 +377,15 @@ def monitorar_impressoes():
 
                             jobs_processados[job_unique_key] = time.time()
 
-                        except PermissionError:
+                        except PermissionError as e_perm:
+                            log_erro("monitorar_impressoes.excel", f"Arquivo Excel aberto por outro programa: {arquivo_hoje}", e_perm)
                             print("Erro: Arquivo Excel aberto por outro programa. Feche o arquivo e tente novamente.")
                         except Exception as e_excel:
+                            log_erro("monitorar_impressoes.excel", f"Falha ao salvar/abrir Excel: {arquivo_hoje}", e_excel)
                             print(f"Erro ao salvar Excel ({type(e_excel).__name__}): {e_excel}")
 
                 except OSError as e:
+                    log_aviso("monitorar_impressoes.impressora", f"Impressora inacessível: {printer_name!r} | {e}")
                     # Impressora inacessível (rede, permissão, etc.) — não interrompe o monitoramento
                     print(f"[Aviso] Impressora '{printer_name}': {e}")
                 finally:
@@ -324,13 +409,27 @@ def monitorar_impressoes():
         except KeyboardInterrupt:
             raise  # Ctrl+C — encerra normalmente
         except Exception as e:
+            log_erro("monitorar_impressoes.loop", "Erro no loop de monitoramento", e)
             print(f"Erro no loop de monitoramento: {type(e).__name__}: {e}")
         
         time.sleep(INTERVALO_SEGUNDOS)
 
 if __name__ == "__main__":
+    def _excepthook(tipo, valor, tb):
+        log = configurar_log_erro()
+        log.critical(
+            "[main] Exceção não tratada: %s: %s\n%s",
+            tipo.__name__, valor, "".join(traceback.format_exception(tipo, valor, tb)),
+        )
+        sys.__excepthook__(tipo, valor, tb)
+
+    sys.excepthook = _excepthook
     try:
         iniciar_log()
         monitorar_impressoes()
     except KeyboardInterrupt:
+        logging.getLogger("monitor_impressoes").info("Monitoramento encerrado pelo usuário (Ctrl+C)")
         print("\nMonitoramento encerrado pelo usuário.")
+    except Exception as e:
+        log_erro("main", "Encerramento por exceção", e)
+        raise
