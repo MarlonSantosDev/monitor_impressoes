@@ -45,6 +45,34 @@ CACHE_JOB_HORAS = 24    # Limpar do cache jobs processados há mais de 24 h
 DEBUG = False           # True: mostra quantas impressoras/jobs por ciclo
 SALVAR_COPIA_SPL = True  # Copiar arquivo de spool do job para pasta arquivos/ (pode exigir admin)
 
+# Definido na inicialização: True se o processo tem acesso à pasta System32\spool\PRINTERS
+_spool_acessivel: bool | None = None
+
+
+def _verificar_acesso_spool() -> bool:
+    """
+    Verifica se o processo tem acesso à pasta do spool (leitura).
+    Retorna True se conseguir abrir/listar; False caso contrário.
+    Evita tentativas e avisos repetidos quando não há permissão de admin.
+    """
+    spool_dir = os.path.join(
+        os.environ.get("SystemRoot", "C:\\Windows"), "System32", "spool", "PRINTERS"
+    )
+    try:
+        h = win32file.CreateFile(
+            spool_dir,
+            win32con.GENERIC_READ,
+            win32con.FILE_SHARE_READ,
+            None,
+            win32con.OPEN_EXISTING,
+            win32con.FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+        win32file.CloseHandle(h)
+        return True
+    except OSError:
+        return False
+
 
 def configurar_log_erro():
     """Configura o módulo logging para gravar em erro.log (append) com data/hora e ponto do código."""
@@ -157,12 +185,13 @@ def caminho_log_do_dia(data=None):
 
 def iniciar_log():
     """Cria a pasta arquivos/ na raiz e executa limpeza de logs antigos."""
-    configurar_log_erro()
-    logging.getLogger("monitor_impressoes").info("Início do monitor de impressões")
+    global _spool_acessivel
+    _spool_acessivel = _verificar_acesso_spool()
     os.makedirs(PASTA_ARQUIVOS, exist_ok=True)
     print(f"Log do dia na raiz: log_impressoes_DDMMYYYY.xlsx")
     print(f"Pasta criada: arquivos/")
-    print(f"Erros e avisos: {ARQUIVO_LOG_ERRO}")
+    if SALVAR_COPIA_SPL and not _spool_acessivel:
+        print("[Aviso] Cópia do spool desativada (sem permissão em System32\\spool\\PRINTERS). Execute como Administrador para salvar cópias.")
     limpar_logs_antigos()
 
 
@@ -259,14 +288,17 @@ def watch_spool_directory(spool_copies: dict):
 
 
 def monitorar_impressoes():
+    global _spool_acessivel
+    if _spool_acessivel is None:
+        _spool_acessivel = _verificar_acesso_spool()
     print(f"Monitorando impressões... (Pressione Ctrl+C para parar)")
 
     jobs_processados = {}
     ultima_limpeza = datetime.now()
 
-    # Dict compartilhado: job_id → caminho do SPL copiado pela thread watcher
+    # Dict compartilhado: job_id → caminho do SPL copiado pela thread watcher (só inicia se houver acesso ao spool)
     spool_copies: dict = {}
-    if SALVAR_COPIA_SPL:
+    if SALVAR_COPIA_SPL and _spool_acessivel:
         t = threading.Thread(target=watch_spool_directory, args=(spool_copies,), daemon=True)
         t.start()
 
@@ -325,9 +357,9 @@ def monitorar_impressoes():
                         # terminar; ao terminar o job sai da fila e perdemos o registro. Melhor
                         # registrar mesmo com 0 páginas/bytes do que não registrar.
 
-                        # Local do arquivo: watcher já copiou o SPL; fallback para cópia direta
+                        # Local do arquivo: watcher já copiou o SPL; fallback para cópia direta (só se tiver acesso ao spool)
                         local_arquivo = ""
-                        if SALVAR_COPIA_SPL:
+                        if SALVAR_COPIA_SPL and _spool_acessivel:
                             os.makedirs(PASTA_ARQUIVOS, exist_ok=True)  # garante pasta se foi removida
                             dest_path = caminho_arquivo_copia(job_id, documento, printer_name)
                             if job_id in spool_copies:
@@ -428,7 +460,6 @@ if __name__ == "__main__":
         iniciar_log()
         monitorar_impressoes()
     except KeyboardInterrupt:
-        logging.getLogger("monitor_impressoes").info("Monitoramento encerrado pelo usuário (Ctrl+C)")
         print("\nMonitoramento encerrado pelo usuário.")
     except Exception as e:
         log_erro("main", "Encerramento por exceção", e)
