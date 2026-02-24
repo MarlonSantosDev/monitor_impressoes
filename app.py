@@ -40,7 +40,7 @@ CABECALHO = [
     "Usuario", "Data_Hora", "Arquivo", "Paginas", "Impressora", "Tamanho", "Local_Arquivo"
 ]
 DIAS_RETENCAO = 2       # Remover log_impressoes_*.xlsx com mais de 2 dias
-INTERVALO_SEGUNDOS = 0.5  # Varredura das filas (menor = mais chance de pegar jobs rápidos)
+INTERVALO_SEGUNDOS = 0.1  # Varredura das filas (mínimo prático para capturar todos os jobs)
 CACHE_JOB_HORAS = 24    # Limpar do cache jobs processados há mais de 24 h
 DEBUG = False           # True: mostra quantas impressoras/jobs por ciclo
 SALVAR_COPIA_SPL = True  # Copiar arquivo de spool do job para pasta arquivos/ (pode exigir admin)
@@ -163,7 +163,7 @@ def copiar_spool_para_arquivos(job_id: int, dest_path: str, max_tentativas: int 
                 return True
             except (OSError, PermissionError):
                 pass
-        time.sleep(0.25)
+        time.sleep(0.1)
     log_aviso(
         "copiar_spool_para_arquivos",
         f"Falha após {max_tentativas} tentativas: job_id={job_id} src={src} dest={dest_path}",
@@ -247,7 +247,7 @@ def watch_spool_directory(spool_copies: dict):
         try:
             results = win32file.ReadDirectoryChangesW(
                 h_dir,
-                1024,
+                65536,
                 False,  # não recursivo
                 win32con.FILE_NOTIFY_CHANGE_FILE_NAME,
                 None,
@@ -267,9 +267,8 @@ def watch_spool_directory(spool_copies: dict):
                 dest = os.path.join(PASTA_ARQUIVOS, f"_temp_{job_id}.spl")
                 # Retenta a cópia: o .SPL pode estar sendo escrito e bloqueado no primeiro instante
                 copiou = False
-                for _ in range(5):
+                for attempt in range(5):
                     try:
-                        time.sleep(0.15)
                         shutil.copy2(src, dest)
                         spool_copies[job_id] = dest
                         copiou = True
@@ -277,9 +276,12 @@ def watch_spool_directory(spool_copies: dict):
                             print(f"[Spool] Capturado: {filename} → {dest}")
                         break
                     except (OSError, PermissionError):
-                        pass
+                        if attempt < 4:
+                            time.sleep(0.08)
                 if not copiou:
                     log_aviso("watch_spool_directory.copia", f"Cópia do spool falhou após 5 tentativas: job_id={job_id} arquivo={filename}")
+                    if DEBUG:
+                        print(f"[Spool] Não foi possível copiar {filename} (arquivo já removido ou bloqueado)")
         except Exception as e:
             log_erro("watch_spool_directory.loop", "Erro ao processar alterações do spool", e)
             if DEBUG:
