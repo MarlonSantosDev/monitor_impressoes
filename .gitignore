@@ -1,6 +1,7 @@
 # Ambiente virtual
 venv/
 .venv/
+**__pycache__**
 
 # Build PyInstaller
 build/
@@ -10,4 +11,5 @@ build/
 # log_impressoes_*.xlsx
 # arquivos/
 /arquivos/
+/dist/*
 __pycache__

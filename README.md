@@ -103,14 +103,15 @@ Fonte dos dados: API Windows de impressão (`win32print`: EnumPrinters, EnumJobs
 
 | Regra | Valor / Comportamento |
 |-------|------------------------|
-| Intervalo de verificação | 0,5 segundo entre cada varredura das filas |
+| Intervalo de verificação | 0,1 segundo entre cada varredura das filas (configurável via `INTERVALO_SEGUNDOS` em `app.py`) |
 | Retenção de logs | 2 dias; arquivos `log_impressoes_*.xlsx` mais antigos são removidos automaticamente |
 | Cache de jobs processados | Jobs são guardados em memória para não duplicar; entradas com mais de 24 h são removidas |
 | Limpeza de logs antigos | Na inicialização e depois uma vez a cada 24 h |
 | Duplicação | Evitada por chave única: `Nome da impressora` + `JobId` |
 | Jobs com 0 páginas | Registrados assim mesmo (evita perder jobs que saem da fila antes de preencher TotalPages) |
 | Impressoras inacessíveis | Geram apenas aviso no console; o monitor continua com as demais |
-| Cópia do spool | Se ativada (`SALVAR_COPIA_SPL = True` em `app.py`), grava em `arquivos/` uma cópia do arquivo de spool (`.spl`) de cada job; pode exigir execução como Administrador |
+| Cópia do spool | Se ativada (`SALVAR_COPIA_SPL = True` em `app.py`), grava em `arquivos/` uma cópia do arquivo de spool (`.spl`) e dos metadados (`.shd`) de cada job; pode exigir execução como Administrador |
+| Visualização do impresso | Se `CONVERTER_EMF_PARA_IMAGEM = True` (padrão), renderiza cada página do SPL para imagens `.bmp` ao lado do `.spl` em `arquivos/` (ex.: `42_Impressora_Doc_p001.bmp`); funciona para jobs EMF (maioria dos drivers Windows/GDI); jobs RAW/PostScript/PCL não são convertidos (o `.spl` ainda é salvo normalmente) |
 
 ---
 
@@ -122,3 +123,5 @@ Fonte dos dados: API Windows de impressão (`win32print`: EnumPrinters, EnumJobs
 | Nenhuma impressão no log | Sem permissão para ver as filas. | Execute o .exe como **Administrador** (ou conta com permissão nas impressoras). |
 | Avisos de impressora inacessível | Impressora de rede offline. | Normal; o monitor continua. |
 | Build falha (PyInstaller) | Python ou PATH incorreto. | Verifique `python --version` e use a mesma pasta do projeto ao rodar `build.bat`. |
+| Imagens BMP não geradas | Job em formato RAW (PostScript/PCL) não suportado para conversão; ou SPL removido antes da captura; ou sem permissão de Administrador. | Normal para impressoras PS/PCL; o `.spl` ainda é copiado. Para desativar tentativas, defina `CONVERTER_EMF_PARA_IMAGEM = False` em `app.py`. |
+| "a linha será gravada na próxima tentativa" | Arquivo Excel do dia estava aberto no momento da impressão. | Feche o Excel; o registro é salvo automaticamente no próximo ciclo. |

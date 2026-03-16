@@ -40,6 +40,7 @@ Write-Host "[3/4] Gerando executavel com PyInstaller..." -ForegroundColor Yellow
     "--noconfirm",
     "--hidden-import", "win32print",
     "--hidden-import", "win32api",
+    "--hidden-import", "win32gui",
     "--hidden-import", "win32timezone",
     "app.py"
 )
