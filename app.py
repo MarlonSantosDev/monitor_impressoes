@@ -271,9 +271,11 @@ def _extrair_emf_pages_de_spool(spl_path: str) -> list:
     cada um sendo um EMF stream completo para uma página.
 
     Estrutura EMFSPOOL:
-      Header 20 bytes: cjSize(4), version(4), nRecords(4), dpszDocName(4), dpszPort(4)
+      Header 20 bytes: ulID(4), version(4), nRecords(4), dpszDocName(4), dpszPort(4)
       Seguido de registros: iType(4), cj(4), dados[cj-8]
-      iType==2 = página EMF; blob deve iniciar com EMR_HEADER (iType==1 no 1º DWORD do blob).
+      iType==1 (EMRI_METAFILE) ou iType==12 (EMRI_METAFILE_DATA) = página EMF;
+      blob deve iniciar com EMR_HEADER (iType==1 no 1º DWORD do blob).
+      iType==2 é EMRI_PS_JOB_DATA (PostScript) — não contém EMF.
     """
     pages = []
     try:
@@ -296,7 +298,7 @@ def _extrair_emf_pages_de_spool(spl_path: str) -> list:
         iType, cj = struct.unpack_from("<II", data, pos)
         if cj < 8 or pos + cj > len(data):
             break
-        if iType == 2:  # página EMF
+        if iType in (1, 12):  # EMRI_METAFILE ou EMRI_METAFILE_DATA — página EMF
             emf_blob = data[pos + 8: pos + cj]
             if len(emf_blob) >= 8:
                 emr_type, _ = struct.unpack_from("<II", emf_blob, 0)
@@ -419,13 +421,16 @@ def _emf_blob_para_bmp(emf_blob: bytes, dpi: int, dest_bmp_path: str) -> bool:
                 bih.biYPelsPerMeter = int(dpi / 0.0254)
 
                 pixel_buf = ctypes.create_string_buffer(row_stride * height_px)
+
+                # Cleanup GDI — deselecionar hbmp ANTES de GetDIBits (requisito MSDN:
+                # "the bitmap must not be selected into a device context")
+                gdi32.SelectObject(hdc_mem, hbmp_old)
+
                 lines = gdi32.GetDIBits(
                     hdc_mem, hbmp, 0, height_px,
                     pixel_buf, ctypes.byref(bih), DIB_RGB_COLORS
                 )
 
-                # Cleanup GDI
-                gdi32.SelectObject(hdc_mem, hbmp_old)
                 gdi32.DeleteObject(hbmp)
                 gdi32.DeleteDC(hdc_mem)
 
@@ -675,6 +680,12 @@ def monitorar_impressoes():
                         if SALVAR_COPIA_SPL and _spool_acessivel:
                             os.makedirs(PASTA_ARQUIVOS, exist_ok=True)
                             dest_path = caminho_arquivo_copia(job_id, documento, printer_name)
+                            # Aguardar até 0,5s para o watcher capturar o SPL (thread assíncrona)
+                            if job_id not in spool_copies:
+                                for _ in range(10):
+                                    time.sleep(0.05)
+                                    if job_id in spool_copies:
+                                        break
                             if job_id in spool_copies:
                                 temp, _ = spool_copies.pop(job_id)
                                 try:
@@ -704,12 +715,17 @@ def monitorar_impressoes():
                                 )
                                 print(f"      [Aviso] Cópia do spool não salva (arquivo não encontrado ou sem permissão em System32\\spool\\PRINTERS)")
 
+                        # Converter EMF → BMP ANTES de salvar no Excel para registrar caminho correto
+                        imagens = []
+                        if CONVERTER_EMF_PARA_IMAGEM and local_arquivo and os.path.isfile(local_arquivo):
+                            imagens = converter_spl_para_imagens(local_arquivo)
+
                         # --- SALVAR NO EXCEL ---
                         arquivo_hoje = caminho_log_do_dia()
                         linha = [
                             job_id, usuario, data_hora, documento, paginas, printer_name,
                             _bytes_para_kb_mb_gb(tamanho),
-                            local_arquivo,
+                            imagens[0] if imagens else local_arquivo,
                         ]
                         try:
                             if not os.path.exists(arquivo_hoje):
@@ -730,14 +746,10 @@ def monitorar_impressoes():
                             print(f"[NOVO] {data_hora} | {usuario} | {documento} ({paginas} pgs)")
                             if SALVAR_COPIA_SPL and os.path.isfile(local_arquivo):
                                 print(f"      Cópia spool salva: {local_arquivo}")
+                            if imagens:
+                                print(f"      [EMF] {len(imagens)} imagem(ns) gerada(s) em arquivos/")
 
                             jobs_processados[job_unique_key] = time.time()
-
-                            # Converter EMF → BMP para visualização
-                            if CONVERTER_EMF_PARA_IMAGEM and local_arquivo and os.path.isfile(local_arquivo):
-                                imagens = converter_spl_para_imagens(local_arquivo)
-                                if imagens:
-                                    print(f"      [EMF] {len(imagens)} imagem(ns) gerada(s) em arquivos/")
 
                         except PermissionError as e_perm:
                             log_erro("monitorar_impressoes.excel", f"Arquivo Excel aberto por outro programa: {arquivo_hoje}", e_perm)
@@ -773,7 +785,7 @@ def monitorar_impressoes():
 
             # Limpeza de spool_copies órfãos (watcher capturou mas loop nunca processou)
             chaves_spool_velhas = [
-                k for k, (caminho, ts) in spool_copies.items()
+                k for k, (caminho, ts) in list(spool_copies.items())
                 if agora - ts > SPOOL_COPIES_MAX_IDADE_SEGUNDOS
             ]
             for k in chaves_spool_velhas:
