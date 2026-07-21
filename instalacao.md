@@ -77,7 +77,7 @@ Para o monitor iniciar com o servidor:
 | Arquivo do dia | Na raiz: `C:\MonitorImpressao\log_impressoes_DDMMYYYY.xlsx` (ex.: `log_impressoes_20022026.xlsx`) |
 | Pasta | `C:\MonitorImpressao\arquivos\` (criada automaticamente) |
 | Aba | **Impressões** |
-| Colunas | ID_Job, Usuario, Data_Hora, Arquivo, Paginas, Impressora, Tamanho_Bytes, Local_Arquivo (detalhes no README) |
+| Colunas | ID_Job, Usuario, Data_Hora, Arquivo, Paginas, Impressora, Tamanho_Bytes, Tamanho_Legivel, Local_Arquivo, Local_Preview (detalhes no README) |
 | Retenção | Até **2 dias**; arquivos mais antigos são removidos automaticamente |
 
 ---

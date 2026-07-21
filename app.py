@@ -42,7 +42,16 @@ PASTA_ARQUIVOS = os.path.join(PASTA_SCRIPT, "arquivos")
 ARQUIVO_LOG_ERRO = os.path.join(PASTA_SCRIPT, "erro.log")
 NOME_ABA = "Impressões"
 CABECALHO = [
-    "ID_Job", "Usuario", "Data_Hora", "Arquivo", "Paginas", "Impressora", "Tamanho_Bytes", "Local_Arquivo"
+    "ID_Job",
+    "Usuario",
+    "Data_Hora",
+    "Arquivo",
+    "Paginas",
+    "Impressora",
+    "Tamanho_Bytes",
+    "Tamanho_Legivel",
+    "Local_Arquivo",
+    "Local_Preview",
 ]
 DIAS_RETENCAO = 2       # Remover log_impressoes_*.xlsx com mais de 2 dias
 INTERVALO_SEGUNDOS = 0.1  # Varredura das filas (mínimo prático para capturar todos os jobs)
@@ -53,19 +62,82 @@ SPOOL_COPIES_MAX_IDADE_SEGUNDOS = 300  # Descartar temp SPL/SHD sem job correspo
 CONVERTER_EMF_PARA_IMAGEM = True  # Renderizar SPL EMF para BMP ao lado do .spl (requer admin)
 EMF_DPI = 150           # DPI das imagens BMP geradas
 
-# Definido na inicialização: True se o processo tem acesso à pasta System32\spool\PRINTERS
+# Definido na inicialização: True se o processo pode listar/ler o spool
 _spool_acessivel: Optional[bool] = None
+
+SPOOL_ESPERA_WATCHER_CICLOS = 40  # 40 × 0,05 s = 2 s aguardando watcher
+SPOOL_COPIA_MAX_TENTATIVAS = 30   # 30 × 0,1 s = 3 s tentando copiar .SPL
+
+
+def _diretorio_spool() -> str:
+    return os.path.join(
+        os.environ.get("SystemRoot", "C:\\Windows"), "System32", "spool", "PRINTERS"
+    )
+
+
+def _pode_ler_arquivo_spool(path: str) -> bool:
+    """True se o processo consegue abrir o .SPL para leitura (pode estar em uso pelo spooler)."""
+    try:
+        h = win32file.CreateFile(
+            path,
+            win32con.GENERIC_READ,
+            win32con.FILE_SHARE_READ
+            | win32con.FILE_SHARE_WRITE
+            | win32con.FILE_SHARE_DELETE,
+            None,
+            win32con.OPEN_EXISTING,
+            0,
+            None,
+        )
+        win32file.CloseHandle(h)
+        return True
+    except (OSError, PermissionError):
+        return False
+    except Exception:
+        return False
+
+
+def _spl_mais_recente(spool_dir: str, max_idade_seg: float = 15.0) -> Optional[str]:
+    """SPL modificado nos últimos max_idade_seg segundos (fallback se JobId ≠ nome do arquivo)."""
+    agora = time.time()
+    melhor_path: Optional[str] = None
+    melhor_mtime = 0.0
+    try:
+        for name in os.listdir(spool_dir):
+            if not name.upper().endswith(".SPL"):
+                continue
+            path = os.path.join(spool_dir, name)
+            try:
+                mt = os.path.getmtime(path)
+            except OSError:
+                continue
+            if agora - mt > max_idade_seg:
+                continue
+            if mt >= melhor_mtime:
+                melhor_mtime = mt
+                melhor_path = path
+    except OSError:
+        return None
+    return melhor_path
 
 
 def _verificar_acesso_spool() -> bool:
     """
-    Verifica se o processo tem acesso à pasta do spool (leitura).
-    Retorna True se conseguir abrir/listar; False caso contrário.
-    Evita tentativas e avisos repetidos quando não há permissão de admin.
+    Verifica se o processo pode usar o spool (listar pasta e ler .SPL quando existir).
+    Evita marcar como acessível só por abrir a pasta, mas falhar ao copiar cada job.
     """
-    spool_dir = os.path.join(
-        os.environ.get("SystemRoot", "C:\\Windows"), "System32", "spool", "PRINTERS"
-    )
+    spool_dir = _diretorio_spool()
+    try:
+        nomes = os.listdir(spool_dir)
+    except (OSError, PermissionError):
+        return False
+    except Exception:
+        return False
+
+    spls = [n for n in nomes if n.upper().endswith(".SPL")]
+    if spls:
+        return _pode_ler_arquivo_spool(os.path.join(spool_dir, spls[0]))
+
     try:
         h = win32file.CreateFile(
             spool_dir,
@@ -78,7 +150,17 @@ def _verificar_acesso_spool() -> bool:
         )
         win32file.CloseHandle(h)
         return True
-    except OSError:
+    except (OSError, PermissionError):
+        return False
+    except Exception:
+        return False
+
+
+def _copiar_arquivo_spool(src: str, dest: str) -> bool:
+    try:
+        shutil.copy2(src, dest)
+        return True
+    except (OSError, PermissionError):
         return False
 
 
@@ -154,39 +236,45 @@ def caminho_arquivo_copia(job_id: int, nome_documento: str, impressora: str) -> 
     return os.path.join(PASTA_ARQUIVOS, dest_nome)
 
 
-def copiar_spool_para_arquivos(job_id: int, dest_path: str, max_tentativas: int = 5) -> bool:
+def copiar_spool_para_arquivos(
+    job_id: int, dest_path: str, max_tentativas: int = SPOOL_COPIA_MAX_TENTATIVAS
+) -> bool:
     """
     Tenta copiar o arquivo de spool do job (System32\\spool\\PRINTERS) para dest_path.
     Faz até max_tentativas com pequenas pausas (o .SPL pode aparecer um pouco depois do job).
     Retorna True se copiou, False se falhou (ex.: sem permissão, arquivo já removido).
     O arquivo é .SPL (formato spool Windows), não o documento original.
     """
-    spool_dir = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "spool", "PRINTERS")
+    spool_dir = _diretorio_spool()
     nome_spl = f"{job_id:05d}.SPL"
     src = os.path.join(spool_dir, nome_spl)
     for _ in range(max_tentativas):
-        if os.path.isfile(src):
-            try:
-                shutil.copy2(src, dest_path)
-                return True
-            except (OSError, PermissionError):
-                pass
+        if os.path.isfile(src) and _copiar_arquivo_spool(src, dest_path):
+            return True
         time.sleep(0.1)
+    alt = _spl_mais_recente(spool_dir)
+    if alt and _copiar_arquivo_spool(alt, dest_path):
+        return True
     log_aviso(
         "copiar_spool_para_arquivos",
-        f"Falha após {max_tentativas} tentativas: job_id={job_id} src={src} dest={dest_path}",
+        f"Spool não copiado: job_id={job_id} (esperado {nome_spl}). "
+        f"Execute como Administrador; impressoras virtuais (ex.: Print to PDF) podem não deixar .SPL.",
     )
     return False
 
 
-def copiar_shd_para_arquivos(job_id: int, dest_spl_path: str) -> bool:
+def copiar_shd_para_arquivos(job_id: int, dest_spl_path: str, spl_origem: Optional[str] = None) -> bool:
     """
     Tenta copiar o arquivo de shadow (.SHD) do job junto com o .SPL.
     O .SHD contém metadados binários completos do job (usuário, documento, páginas, tipo de dados).
     Retorna True se copiou, False se não encontrou ou falhou.
     """
-    spool_dir = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "spool", "PRINTERS")
-    src = os.path.join(spool_dir, f"{job_id:05d}.SHD")
+    spool_dir = _diretorio_spool()
+    if spl_origem:
+        base = os.path.splitext(os.path.basename(spl_origem))[0]
+        src = os.path.join(spool_dir, f"{base}.SHD")
+    else:
+        src = os.path.join(spool_dir, f"{job_id:05d}.SHD")
     dest = os.path.splitext(dest_spl_path)[0] + ".shd"
     if os.path.isfile(src):
         try:
@@ -499,9 +587,7 @@ def watch_spool_directory(spool_copies: dict):
     Requer permissões de administrador.
     Nota: o .SPL é formato Windows EMF/RAW, não o documento original (PDF/DOCX).
     """
-    spool_dir = os.path.join(
-        os.environ.get("SystemRoot", "C:\\Windows"), "System32", "spool", "PRINTERS"
-    )
+    spool_dir = _diretorio_spool()
     try:
         h_dir = win32file.CreateFile(
             spool_dir,
@@ -680,9 +766,9 @@ def monitorar_impressoes():
                         if SALVAR_COPIA_SPL and _spool_acessivel:
                             os.makedirs(PASTA_ARQUIVOS, exist_ok=True)
                             dest_path = caminho_arquivo_copia(job_id, documento, printer_name)
-                            # Aguardar até 0,5s para o watcher capturar o SPL (thread assíncrona)
+                            # Aguardar watcher capturar o SPL (thread assíncrona)
                             if job_id not in spool_copies:
-                                for _ in range(10):
+                                for _ in range(SPOOL_ESPERA_WATCHER_CICLOS):
                                     time.sleep(0.05)
                                     if job_id in spool_copies:
                                         break
@@ -709,23 +795,34 @@ def monitorar_impressoes():
                                     local_arquivo = dest_path
                                     copiar_shd_para_arquivos(job_id, dest_path)
                             if not local_arquivo:
-                                log_aviso(
-                                    "monitorar_impressoes.copia_spool",
-                                    f"Cópia do spool não salva: job_id={job_id} documento={documento!r} impressora={printer_name!r}",
+                                print(
+                                    "      [Aviso] Cópia do spool não salva — metadados foram gravados no Excel. "
+                                    "Para .spl/.bmp: execute como Administrador (Print to PDF pode não gerar spool)."
                                 )
-                                print(f"      [Aviso] Cópia do spool não salva (arquivo não encontrado ou sem permissão em System32\\spool\\PRINTERS)")
 
-                        # Converter EMF → BMP ANTES de salvar no Excel para registrar caminho correto
                         imagens = []
                         if CONVERTER_EMF_PARA_IMAGEM and local_arquivo and os.path.isfile(local_arquivo):
                             imagens = converter_spl_para_imagens(local_arquivo)
 
+                        try:
+                            tamanho_bytes = int(tamanho)
+                        except (TypeError, ValueError):
+                            tamanho_bytes = 0
+                        local_preview = ";".join(imagens) if imagens else ""
+
                         # --- SALVAR NO EXCEL ---
                         arquivo_hoje = caminho_log_do_dia()
                         linha = [
-                            job_id, usuario, data_hora, documento, paginas, printer_name,
-                            _bytes_para_kb_mb_gb(tamanho),
-                            imagens[0] if imagens else local_arquivo,
+                            job_id,
+                            usuario,
+                            data_hora,
+                            documento,
+                            paginas,
+                            printer_name,
+                            tamanho_bytes,
+                            _bytes_para_kb_mb_gb(tamanho_bytes),
+                            local_arquivo,
+                            local_preview,
                         ]
                         try:
                             if not os.path.exists(arquivo_hoje):

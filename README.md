@@ -43,6 +43,8 @@ Não é necessário instalar Python na máquina onde o .exe roda.
 | `app.py` | Código do monitor. |
 | `requirements.txt` | Dependências do app (`pywin32`, `openpyxl`). |
 | `requirements-build.txt` | Dependências do app + PyInstaller (para o build). |
+| `requirements-dev.txt` | pytest (testes locais). |
+| `tests/` | Testes unitários (`pytest -q`). |
 | `build.bat` | Entrada: duplo clique para gerar o .exe (chama `build.ps1`). |
 | `build.ps1` | Cria venv (se não existir), instala deps e roda PyInstaller. |
 
@@ -74,7 +76,7 @@ O Excel do dia fica **na raiz** (mesma pasta do .exe). A pasta **arquivos/** é 
 
 - **Um arquivo por dia** na raiz: `log_impressoes_DDMMYYYY.xlsx`; retenção de **2 dias** (arquivos mais antigos são removidos automaticamente).
 - Aba: **Impressões**.
-- **Pasta `arquivos/`**: se a opção de cópia do spool estiver ativa, aqui ficam cópias dos arquivos de spool (`.spl`) de cada job; a coluna **Local_Arquivo** do Excel contém o caminho completo desses arquivos.
+- **Pasta `arquivos/`**: se a opção de cópia do spool estiver ativa, aqui ficam cópias dos arquivos de spool (`.spl`) de cada job; a coluna **Local_Arquivo** do Excel contém o caminho do `.spl`. A coluna **Local_Preview** lista os `.bmp` (páginas EMF), separados por `;`.
 
 Enquanto o monitor estiver rodando, evite deixar o arquivo do dia aberto no Excel para não dar erro de permissão.
 
@@ -92,10 +94,30 @@ Cada linha registra um job de impressão com as colunas abaixo (ordem fixa):
 | Arquivo | Nome do documento (pDocument) |
 | Paginas | Total de páginas (TotalPages) |
 | Impressora | Nome da impressora |
-| Tamanho_Bytes | Tamanho do job em bytes (Size) |
-| Local_Arquivo | Caminho completo do arquivo de cópia do spool em `arquivos/` (ex.: `...\arquivos\42_Impressora_Doc.spl`) |
+| Tamanho_Bytes | Tamanho do job em bytes, inteiro (`Size` da API) |
+| Tamanho_Legivel | Mesmo tamanho em B, KB, MB ou GB (leitura humana) |
+| Local_Arquivo | Caminho completo da cópia do spool (`.spl`) em `arquivos/` |
+| Local_Preview | Caminhos das imagens `.bmp` geradas (uma por página EMF), separados por `;` — vazio se não houver preview |
 
 Fonte dos dados: API Windows de impressão (`win32print`: EnumPrinters, EnumJobs nível 2).
+
+---
+
+## Privacidade e retenção (dados sensíveis)
+
+O monitor grava **usuário Windows**, **nome do documento** e, quando permitido, **cópia do spool e imagens** do que foi impresso. Os arquivos ficam na pasta do `.exe` (Excel + `arquivos/`), com retenção automática de **2 dias** nos logs Excel. Restrinja permissões NTFS nessa pasta (uso interno/LGPD conforme política da sua organização).
+
+---
+
+## Desenvolvimento e testes
+
+| Comando | Uso |
+|---------|-----|
+| `pip install -r requirements.txt -r requirements-dev.txt` | Ambiente local |
+| `pytest -q` | Testes unitários (helpers + schema Excel) |
+| `python app.py` | Monitor em modo script (Windows) |
+
+Documentação de validação: [`docs/PRD-001-validacao-monitor.md`](docs/PRD-001-validacao-monitor.md).
 
 ---
 
@@ -124,4 +146,5 @@ Fonte dos dados: API Windows de impressão (`win32print`: EnumPrinters, EnumJobs
 | Avisos de impressora inacessível | Impressora de rede offline. | Normal; o monitor continua. |
 | Build falha (PyInstaller) | Python ou PATH incorreto. | Verifique `python --version` e use a mesma pasta do projeto ao rodar `build.bat`. |
 | Imagens BMP não geradas | Job em formato RAW (PostScript/PCL) não suportado para conversão; ou SPL removido antes da captura; ou sem permissão de Administrador. | Normal para impressoras PS/PCL; o `.spl` ainda é copiado. Para desativar tentativas, defina `CONVERTER_EMF_PARA_IMAGEM = False` em `app.py`. |
+| Avisos em `erro.log` sobre spool / `copiar_spool_para_arquivos` | Job registrado no Excel, mas o `.SPL` não foi copiado (permissão, job rápido ou **Microsoft Print to PDF**). | **WARNING**, não encerra o monitor. Execute como **Administrador**; para capturar conteúdo, prefira impressora física/GDI. Metadados (usuário, documento) continuam no Excel. |
 | "a linha será gravada na próxima tentativa" | Arquivo Excel do dia estava aberto no momento da impressão. | Feche o Excel; o registro é salvo automaticamente no próximo ciclo. |
